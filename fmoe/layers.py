@@ -74,7 +74,7 @@ def mark_module_parallel_comm(module, comm):
         setattr(p, "dp_comm", comm)
 
 
-def _fmoe_general_global_forward(inp, gate, expert_fn, num_expert, world_size):
+def _fmoe_general_global_forward(inp, gate, expert_fn, num_expert, world_size, timers):
     r"""
     A private function that performs the following steps to complete the MoE
     computation.
@@ -86,6 +86,13 @@ def _fmoe_general_global_forward(inp, gate, expert_fn, num_expert, world_size):
     Intermediate results like expert counts are hidden from users by this
     function.
     """
+    #from remote_pdb import RemotePdb
+    #if torch.cuda.current_device() == 0:
+    #    RemotePdb('127.0.0.1', 4444).set_trace()
+    #else:
+    #    RemotePdb('127.0.0.1', 5555).set_trace()
+    #for i in range(32):
+    #    gate[128*i:128*i+128,:]=i
     (
         pos,
         local_expert_count,
@@ -96,21 +103,34 @@ def _fmoe_general_global_forward(inp, gate, expert_fn, num_expert, world_size):
     topk = 1
     if len(gate.shape) == 2:
         topk = gate.shape[1]
+    timers("moe_scatter").start()
     x = MOEScatter.apply(
         inp, pos // topk,
         local_expert_count, global_expert_count, fwd_batch_size, world_size
     )
+    timers("moe_scatter").stop()
+    #if torch.distributed.get_rank() == (torch.distributed.get_world_size() - 1):
+        #print("gate.shape:", gate.shape, inp.shape, flush=True)
+        #print("gate:", gate, flush=True)
+        #print("local_expert_count: ", local_expert_count, flush=True)
+        #print("global_expert_count: ", global_expert_count, flush=True)
+        #print("fwd_batch_size: ", fwd_batch_size, flush=True)
+    #timers.log(["moe_scatter"], normalizer=1, reset=True)
+    timers("expert_fn").start()
     x = expert_fn(x, fwd_expert_count)
+    timers("expert_fn").stop()
 
     out_batch_size = inp.shape[0]
     if len(gate.shape) == 2:
         out_batch_size *= gate.shape[1]
 
+    timers("moe_gather").start()
     x = MOEGather.apply(
         x, pos,
         local_expert_count, global_expert_count,
         out_batch_size, world_size
     )
+    timers("moe_gather").stop()
     return x
 
 
@@ -205,7 +225,7 @@ class FMoE(nn.Module):
                 mark_module_parallel_comm(self.experts, comm)
         mark_module_parallel_comm(self.gate, "moe")
 
-    def forward(self, inp):
+    def forward(self, inp, timers=None):
         r"""
         The FMoE module first computes gate output, and then conduct MoE forward
         according to the gate.  The score of the selected gate given by the
@@ -228,10 +248,12 @@ class FMoE(nn.Module):
             inp = inp[mask == 0, :]
             gate_top_k_idx = gate_top_k_idx[mask == 0, :]
 
+        timers("_fmoe_general_global_forward").start()
         fwd = _fmoe_general_global_forward(
             inp, gate_top_k_idx,
-            self.expert_fn, self.num_expert, self.world_size
+            self.expert_fn, self.num_expert, self.world_size, timers
         )
+        timers("_fmoe_general_global_forward").stop()
 
         # recover deleted tensors
         if self.mask is not None and self.mask_dict is not None:

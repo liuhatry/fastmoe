@@ -70,12 +70,12 @@ class FMoETransformerMLP(FMoE):
         )
         self.mark_parallel_comm(expert_dp_comm)
 
-    def forward(self, inp: torch.Tensor):
+    def forward(self, inp: torch.Tensor, timers=None):
         r"""
         This module wraps up the FMoE module with reshape, residual and layer
         normalization.
         """
         original_shape = inp.shape
         inp = inp.reshape(-1, self.d_model)
-        output = super().forward(inp)
+        output = super().forward(inp, timers)
         return output.reshape(original_shape)

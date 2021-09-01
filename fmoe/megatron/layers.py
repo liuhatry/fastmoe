@@ -138,9 +138,9 @@ class MegatronMLP(FMoETransformerMLP):
         std = self.sigma / math.sqrt(2.0 * self.num_layers)
         _megatron_init_method(self.experts.h4toh, rng, std)
 
-    def forward(self, inp):
+    def forward(self, inp, timers=None):
         return (
-            super().forward(inp),
+            super().forward(inp, timers),
             torch.zeros(self.hidden_size, dtype=inp.dtype, device=inp.device),
         )
 
